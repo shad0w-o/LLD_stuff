@@ -19,15 +19,17 @@ class LRU<K, V> {
     private final Node<K, V> head;
     private final Node<K, V> tail;
     private final HashMap<K, Node<K, V>> map;
+    private final PriorityQueue<Node<K, V>> expQueue;
 
     public LRU(int capacity, long ttl) {
         if(capacity <= 0) throw new IllegalArgumentException("capacity must be positive, got: " + capacity);
         if(ttl <= 0) throw new IllegalArgumentException("ttl must be positive, got: " + ttl);
         this.capacity = capacity;
         this.ttl = ttl;
-        this.head = new Node<>(null, null, null);
-        this.tail = new Node<>(null, null, null);
+        head = new Node<>(null, null, null);
+        tail = new Node<>(null, null, null);
         map = new HashMap<>();
+        expQueue = new PriorityQueue<>(Comparator.comparing(node -> node.expiresAt));
         head.next = tail;
         tail.prev = head;
     }
@@ -38,8 +40,7 @@ class LRU<K, V> {
 
         Instant now = Instant.now();
         if(now.isAfter(node.expiresAt)) {
-            remove(node);
-            map.remove(node.key);
+            removeNode(node); // remove() on a priority queue takes O(n), feels like its better to leave it stale and do a lazy removal but idk i am leaving it this way
             return null;
         }
 
@@ -48,27 +49,37 @@ class LRU<K, V> {
     }
 
     public synchronized void put(K key, V value) {
-        if(map.containsKey(key)) {
-            Node<K, V> node = map.get(key);
+        Node<K, V> node = map.get(key);
+        if(node != null) {
+            expQueue.remove(node);
             node.value = value;
             node.expiresAt = Instant.now().plusSeconds(ttl); // resets on write
+            expQueue.offer(node);
             moveToFront(node);
-        } else {
-            if(map.size() == capacity) {
-                purgeExpired();
-                if (map.size() == capacity) evict();
-            }
-            Instant expiresAt = Instant.now().plusSeconds(ttl);
-            Node<K, V> node = new Node<>(key, value, expiresAt);
-            map.put(key, node);
-            addFirst(node);
+            return;
         }
+
+        if(map.size() == capacity) {
+            purgeExpired();
+            if (map.size() == capacity) evict();
+        }
+
+        Instant expiresAt = Instant.now().plusSeconds(ttl);
+        Node<K, V> node = new Node<>(key, value, expiresAt);
+        map.put(key, node);
+        expQueue.offer(node);
+        addFirst(node);
     }
 
     private void evict() {
         Node<K, V> node = tail.prev;
-        remove(node);
+        removeNode(node);
+    }
+
+    private void removeNode(Node<K, V> node) {
+        removeFromList(node);
         map.remove(node.key);
+        expQueue.remove(node);
     }
 
     private void addFirst(Node<K, V> node) {
@@ -79,11 +90,11 @@ class LRU<K, V> {
     }
 
     private void moveToFront(Node<K, V> node) {
-        remove(node);
+        removeFromList(node);
         addFirst(node);
     }
 
-    private void remove(Node<K, V> node) {
+    private void removeFromList(Node<K, V> node) {
         node.prev.next = node.next;
         node.next.prev = node.prev;
         node.next = null;
@@ -91,16 +102,23 @@ class LRU<K, V> {
     }
 
     private void purgeExpired() {
-        Instant now = Instant.now();
-        Node<K, V> node = head.next;
+//        Instant now = Instant.now();
+//        Node<K, V> node = head.next;
+//
+//        while(node != tail) {
+//            Node<K, V> next = node.next;
+//            if(now.isAfter(node.expiresAt)) {
+//                remove(node);
+//                map.remove(node.key);
+//            }
+//            node = next;
+//        }
 
-        while(node != tail) {
-            Node<K, V> next = node.next;
-            if(now.isAfter(node.expiresAt)) {
-                remove(node);
-                map.remove(node.key);
-            }
-            node = next;
+        Instant now = Instant.now();
+        while(!expQueue.isEmpty() && now.isAfter(expQueue.peek().expiresAt)) {
+            Node<K, V> node = expQueue.poll();
+            removeFromList(node);
+            map.remove(node.key);
         }
     }
 }
